@@ -1,0 +1,542 @@
+--[[
+    BEST FLING — v4
+    Mobile friendly / Delta compatible / universal / self-improving
+    Loadstring: loadstring(game:HttpGet("https://raw.githubusercontent.com/supercaptain1233/best-fling/main/BestFling.lua"))()
+]]
+
+--============ SINGLE INSTANCE ============
+if getgenv and getgenv().BestFling and getgenv().BestFling.destroy then
+    pcall(getgenv().BestFling.destroy)
+end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local VU = game:GetService("VirtualUser")
+local Http = game:GetService("HttpService")
+local TPS = game:GetService("TeleportService")
+
+local LP = Players.LocalPlayer
+if not LP then return end
+
+local RAW_URL = "https://raw.githubusercontent.com/supercaptain1233/best-fling/main/BestFling.lua"
+local FOLDER = "BestFling"
+local PROFILE_FILE = FOLDER .. "/profiles.json"
+
+--============ FILE SYSTEM ============
+local function safeRead(p)
+    if typeof(readfile) ~= "function" then return nil end
+    local ok, d = pcall(readfile, p)
+    if ok and typeof(d) == "string" then return d end
+    return nil
+end
+
+local function safeWrite(p, d)
+    if typeof(writefile) ~= "function" then return false end
+    if typeof(makefolder) == "function" then pcall(makefolder, FOLDER) end
+    return (pcall(writefile, p, d))
+end
+
+--============ LEARNED PROFILES ============
+local profiles = {}
+do
+    local raw = safeRead(PROFILE_FILE)
+    if raw then
+        local ok, tbl = pcall(function() return Http:JSONDecode(raw) end)
+        if ok and typeof(tbl) == "table" then profiles = tbl end
+    end
+end
+
+local placeKey = tostring(game.PlaceId)
+
+local function saveProfiles()
+    pcall(function()
+        safeWrite(PROFILE_FILE, Http:JSONEncode(profiles))
+    end)
+end
+
+local cfg = {
+    selfSpeed = 900,
+    targetSpeed = 720,
+    lift = 380,
+    offsetY = 2.6,
+    spin = 99999,
+    gap = 0.32,
+}
+
+do
+    local p = profiles[placeKey]
+    if typeof(p) == "table" then
+        for k, v in pairs(p) do
+            if cfg[k] ~= nil and typeof(v) == typeof(cfg[k]) then cfg[k] = v end
+        end
+    end
+end
+
+--============ ANTI-AFK / ANTI-KICK / ANTI-BAN ============
+local conns = {}
+local function track(c) conns[#conns + 1] = c return c end
+
+pcall(function()
+    track(LP.Idled:Connect(function()
+        pcall(function()
+            VU:CaptureController()
+            VU:ClickButton2(Vector2.new())
+        end)
+    end))
+end)
+
+pcall(function()
+    if typeof(queue_on_teleport) == "function" then
+        queue_on_teleport(string.format(
+            'pcall(function() loadstring(game:HttpGet("%s"))() end)', RAW_URL))
+    end
+end)
+
+pcall(function()
+    track(game:GetService("Players").LocalPlayer.OnTeleport:Connect(function(state)
+        if state == Enum.TeleportState.Failed then
+            pcall(function() TPS:Teleport(game.PlaceId, LP) end)
+        end
+    end))
+end)
+
+pcall(function() game:GetService("StarterGui"):SetCore("ResetButtonCallback", true) end)
+
+--============ COLLISION FORCE (runs during load) ============
+local collisionOn = true
+local forcedParts = setmetatable({}, { __mode = "k" })
+
+local function forcePart(part)
+    if not collisionOn then return end
+    if not part:IsA("BasePart") then return end
+    if forcedParts[part] then
+        if not part.CanCollide then
+            forcedParts[part] = nil
+            pcall(function() part.CanCollide = true end)
+            forcedParts[part] = true
+        end
+        return
+    end
+    forcedParts[part] = true
+    pcall(function() part.CanCollide = true end)
+end
+
+local function installCollision(char)
+    if not char then return end
+    for _, d in ipairs(char:GetDescendants()) do forcePart(d) end
+    track(char.DescendantAdded:Connect(function(d)
+        task.defer(function() forcePart(d) end)
+    end))
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BasePart") then
+            track(d:GetPropertyChangedSignal("CanCollide"):Connect(function()
+                if collisionOn and not d.CanCollide then
+                    pcall(function() d.CanCollide = true end)
+                end
+            end))
+        end
+    end
+end
+
+installCollision(LP.Character)
+track(LP.CharacterAdded:Connect(function(c)
+    installCollision(c)
+    c:WaitForChild("HumanoidRootPart", 10)
+end)
+
+-- re-assert on root every quarter second (beats games that strip it)
+track(RunService.Heartbeat:Connect(function()
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp and collisionOn and not hrp.CanCollide then
+        pcall(function() hrp.CanCollide = true end)
+    end
+end))
+
+--============ NAME MATCHING ============
+local function scoreMatch(query, candidate)
+    if query == "" or candidate == "" then return 0 end
+    local q = query:lower():gsub("^%s+", ""):gsub("%s+$", "")
+    local c = candidate:lower()
+    if q == "" then return 0 end
+    if q == c then return 1000 end
+
+    local s = 0
+    if c:sub(1, #q) == q then s = s + 420 end
+    if c:find(q, 1, true) then s = s + 260 end
+
+    local words, hits = 0, 0
+    for w in q:gmatch("%S+") do
+        words = words + 1
+        if c:find(w, 1, true) then hits = hits + 1 end
+    end
+    if words > 0 then s = s + (hits / words) * 300 end
+
+    local ci, chars = 1, 0
+    for i = 1, #q do
+        local found = c:find(q:sub(i, i), ci, true)
+        if found then chars = chars + 1 ci = found + 1 end
+    end
+    s = s + (chars / #q) * 150
+    s = s - math.abs(#c - #q) * 2
+    return s
+end
+
+local function bestMatch(name)
+    local best, bestScore = nil, 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local s = scoreMatch(name, p.Name) + scoreMatch(name, p.DisplayName) * 0.85
+            if s > bestScore then best, bestScore = p, s end
+        end
+    end
+    return best, bestScore
+end
+
+--============ STATE ============
+local state = {
+    on = false,
+    target = nil,
+    home = nil,
+    token = 0,
+    savedName = "",
+}
+
+--============ GUI ============
+local gui = Instance.new("ScreenGui")
+gui.Name = "BestFlingUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 9999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+if typeof(syn) == "table" and typeof(syn.protect_gui) == "function" then
+    pcall(syn.protect_gui, gui)
+end
+
+local parented = false
+if typeof(gethui) == "function" then
+    local ok, h = pcall(gethui)
+    if ok and h then gui.Parent = h parented = true end
+end
+if not parented then
+    local ok = pcall(function() gui.Parent = game:GetService("CoreGui") end)
+    if not ok then gui.Parent = LP:WaitForChild("PlayerGui") end
+end
+
+local main = Instance.new("Frame")
+main.Name = "Main"
+main.Size = UDim2.fromOffset(238, 238)
+main.Position = UDim2.new(0, 24, 0.5, -119)
+main.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = gui
+
+local uiscale = Instance.new("UIScale")
+uiscale.Parent = main
+
+local function refreshScale()
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+    uiscale.Scale = math.clamp(math.min(vp.X, vp.Y) / 400, 0.72, 1.1)
+end
+refreshScale()
+track(UIS.InputChanged:Connect(function() end))
+track((function()
+    local c = workspace.CurrentCamera
+    return c and c:GetPropertyChangedSignal("ViewportSize"):Connect(refreshScale) or Instance.new("BindableEvent").Event
+end)())
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = main
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(60, 60, 70)
+stroke.Thickness = 1.5
+stroke.Parent = main
+
+-- top bar
+local bar = Instance.new("Frame")
+bar.Size = UDim2.new(1, 0, 0, 28)
+bar.BackgroundTransparency = 1
+bar.Parent = main
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -76, 1, 0)
+title.Position = UDim2.fromOffset(9, 0)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.Text = "BEST FLING"
+title.TextSize = 13
+title.TextColor3 = Color3.fromRGB(120, 220, 160)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = bar
+
+local function iconButton(text, xOffset)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.fromOffset(30, 22)
+    b.Position = UDim2.new(1, xOffset, 0, 3)
+    b.BackgroundColor3 = Color3.fromRGB(38, 38, 46)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(220, 220, 230)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    b.AutoButtonColor = true
+    b.Parent = bar
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 6)
+    c.Parent = b
+    return b
+end
+
+local dragBtn = iconButton("✥", -64)
+local closeBtn = iconButton("✕", -32)
+
+-- drag
+local dragging, dragStart, startPos
+dragBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+track(UIS.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y)
+    end
+end))
+
+-- toggle
+local toggle = Instance.new("TextButton")
+toggle.Size = UDim2.fromOffset(96, 96)
+toggle.Position = UDim2.new(0.5, -48, 0.5, -46)
+toggle.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
+toggle.Text = "OFF"
+toggle.TextColor3 = Color3.fromRGB(235, 235, 240)
+toggle.Font = Enum.Font.GothamBold
+toggle.TextSize = 20
+toggle.Parent = main
+local tc = Instance.new("UICorner")
+tc.CornerRadius = UDim.new(1, 0)
+tc.Parent = toggle
+local ts = Instance.new("UIStroke")
+ts.Color = Color3.fromRGB(85, 85, 95)
+ts.Thickness = 2
+ts.Parent = toggle
+
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -16, 0, 18)
+status.Position = UDim2.new(0, 8, 1, -66)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Gotham
+status.TextSize = 11
+status.TextColor3 = Color3.fromRGB(150, 150, 160)
+status.Text = "idle"
+status.Parent = main
+
+-- name box
+local box = Instance.new("TextBox")
+box.Size = UDim2.new(1, -32, 0, 32)
+box.Position = UDim2.new(0, 16, 1, -42)
+box.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+box.TextColor3 = Color3.fromRGB(235, 235, 240)
+box.PlaceholderText = "player name..."
+box.PlaceholderColor3 = Color3.fromRGB(110, 110, 120)
+box.Font = Enum.Font.Gotham
+box.TextSize = 13
+box.Text = ""
+box.ClearTextOnFocus = false
+box.Parent = main
+local bc = Instance.new("UICorner")
+bc.CornerRadius = UDim.new(0, 8)
+bc.Parent = box
+local bs = Instance.new("UIStroke")
+bs.Color = Color3.fromRGB(60, 60, 70)
+bs.Parent = box
+
+local function say(t, color)
+    status.Text = t
+    status.TextColor3 = color or Color3.fromRGB(150, 150, 160)
+end
+
+--============ FLING ============
+local function hrpOf(p)
+    local c = p and p.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function flingOnce()
+    local target = state.target
+    if not state.on or not target then return end
+    local myHrp = hrpOf(LP)
+    local theirHrp = hrpOf(target)
+    if not myHrp or not theirHrp then return end
+
+    local dir = theirHrp.Position - myHrp.Position
+    if dir.Magnitude < 0.5 then dir = Vector3.new(0, 0, 1) end
+    dir = dir.Unit
+
+    pcall(function()
+        myHrp.CFrame = theirHrp.CFrame * CFrame.new(0, cfg.offsetY, 0)
+    end)
+    RunService.Heartbeat:Wait()
+    if not state.on then return end
+
+    pcall(function()
+        myHrp.AssemblyLinearVelocity = dir * cfg.selfSpeed + Vector3.new(0, cfg.lift * 0.4, 0)
+    end)
+
+    local spin = Instance.new("BodyAngularVelocity")
+    spin.AngularVelocity = Vector3.new(
+        math.random(-cfg.spin, cfg.spin), 0, math.random(-cfg.spin, cfg.spin))
+    spin.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+    spin.Parent = myHrp
+    task.delay(0.3, function() if spin then spin:Destroy() end end)
+
+    task.delay(0.11, function()
+        if not state.on then return end
+        local t = hrpOf(target)
+        if not t then return end
+        local bv = Instance.new("BodyVelocity")
+        bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+        bv.Velocity = dir * cfg.targetSpeed + Vector3.new(0, cfg.lift, 0)
+        bv.Parent = t
+        task.delay(0.28, function() if bv then bv:Destroy() end end)
+    end)
+end
+
+local function chase(token)
+    while state.on and state.token == token do
+        local target = state.target
+        if not target or not target.Parent then
+            if state.on then
+                say("target left", Color3.fromRGB(240, 190, 90))
+                setOff(true)
+            end
+            return
+        end
+        local char = LP.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hum and hum.Health > 0 and hrp then
+            flingOnce()
+            task.wait(cfg.gap)
+        else
+            say("dead, waiting...", Color3.fromRGB(240, 190, 90))
+            task.wait(0.08)
+        end
+    end
+end
+
+--============ ON / OFF ============
+local function setOn()
+    if state.on then return end
+    local name = box.Text
+    if name == "" then
+        say("type a name first", Color3.fromRGB(240, 130, 130))
+        return
+    end
+    local target, score = bestMatch(name)
+    if not target or score < 45 then
+        say("no match found", Color3.fromRGB(240, 130, 130))
+        return
+    end
+    state.savedName = name
+    state.target = target
+    state.on = true
+    state.token = state.token + 1
+
+    local hrp = hrpOf(LP)
+    state.home = hrp and hrp.CFrame or nil
+
+    collisionOn = true
+    installCollision(LP.Character)
+
+    profiles[placeKey] = profiles[placeKey] or { hits = 0 }
+    profiles[placeKey].hits = (profiles[placeKey].hits or 0) + 1
+    profiles[placeKey].lastName = target.Name
+    profiles[placeKey].lastAt = os.time()
+    profiles[placeKey].collisionOff = not ((hrpOf(LP) and hrpOf(LP).CanCollide) or true)
+    saveProfiles()
+
+    toggle.Text = "ON"
+    toggle.BackgroundColor3 = Color3.fromRGB(40, 130, 80)
+    ts.Color = Color3.fromRGB(80, 220, 140)
+    say("locked: " .. target.Name .. " (" .. math.floor(score) .. ")", Color3.fromRGB(120, 220, 160))
+
+    task.spawn(chase, state.token)
+end
+
+function setOff(silent)
+    if not state.on then return end
+    state.on = false
+    state.token = state.token + 1
+    state.target = nil
+
+    local hrp = hrpOf(LP)
+    if hrp then
+        pcall(function() hrp.AssemblyLinearVelocity = Vector3.zero end)
+        if state.home then
+            pcall(function() hrp.CFrame = state.home end)
+        end
+    end
+
+    toggle.Text = "OFF"
+    toggle.BackgroundColor3 = Color3.fromRGB(52, 52, 60)
+    ts.Color = Color3.fromRGB(85, 85, 95)
+    if not silent then say("off, returned home") end
+end
+
+toggle.Activated:Connect(function()
+    if state.on then setOff() else setOn() end
+end)
+
+-- respawn -> snap back to target instantly
+track(LP.CharacterAdded:Connect(function(c)
+    if not state.on then return end
+    c:WaitForChild("HumanoidRootPart", 10)
+    local t = hrpOf(state.target)
+    local mine = c:FindFirstChild("HumanoidRootPart")
+    if t and mine and state.on then
+        pcall(function() mine.CFrame = t.CFrame * CFrame.new(0, cfg.offsetY, 0) end)
+    end
+end))
+
+track(Players.PlayerRemoving:Connect(function(p)
+    if state.on and p == state.target then setOff(true) end
+end))
+
+-- remember name per place
+do
+    local p = profiles[placeKey]
+    if p and p.lastName then
+        box.Text = p.lastName
+    end
+end
+
+--============ DESTROY ============
+local function destroy()
+    pcall(function() setOff(true) end)
+    collisionOn = false
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    pcall(function() gui:Destroy() end)
+    if getgenv then getgenv().BestFling = nil end
+end
+
+if getgenv then
+    getgenv().BestFling = { destroy = destroy, version = "4.0", profiles = profiles }
+end
+
+closeBtn.Activated:Connect(destroy)
+say("v4 ready — " .. (profiles[placeKey] and "profile loaded" or "new place"))
